@@ -23,6 +23,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.example.aiasistent2.updater.AppUpdateChecker
 import kotlinx.coroutines.launch
+import android.net.http.SslError
+import android.webkit.SslErrorHandler
 
 class MainActivity : AppCompatActivity() {
 
@@ -491,6 +493,16 @@ class MainActivity : AppCompatActivity() {
                         "text/html",
                         "UTF-8"
                     )
+                }
+
+                @SuppressLint("WebViewClientOnReceivedSslError")
+                override fun onReceivedSslError(
+                    view: WebView?,
+                    handler: SslErrorHandler?,
+                    error: SslError?
+                ) {
+                    // SSL xatolariga e'tibor bermay davom etish (Ngrok/Colab uchun)
+                    handler?.proceed()
                 }
             }
 
