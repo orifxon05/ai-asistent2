@@ -43,7 +43,7 @@ class MainActivity : AppCompatActivity() {
         private const val PREF_NAME = "jarvis_prefs"
         private const val KEY_API_KEY = "gemini_api_key"
         private const val GEMINI_URL =
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
 
         private val httpClient = OkHttpClient.Builder()
             .connectTimeout(30, TimeUnit.SECONDS)

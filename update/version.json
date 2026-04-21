@@ -1,6 +1,6 @@
 {
-  "versionCode": 4,
-  "versionName": "1.3",
+  "versionCode": 6,
+  "versionName": "1.5",
   "downloadUrl": "https://github.com/orifxon05/ai-asistent2/releases/latest/download/app-release.apk",
-  "changeLog": "Tuzatishlar: Orqa tugma ilovadan chiqarmaydi, yangilanish bir marta yuklanadi, API kalit yo'qolmaydi"
+  "changeLog": "API kalit orqali ulanishdagi xatolik to'liq tuzatildi! Eng barqaror model o'rnatildi."
 }
