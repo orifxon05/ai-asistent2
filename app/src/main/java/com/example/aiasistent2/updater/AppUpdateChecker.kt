@@ -23,13 +23,14 @@ class AppUpdateChecker(private val context: Context) {
 
     companion object {
         private const val TAG = "AppUpdateChecker"
-        
-        // GitHub repository owner and name
-        private const val GITHUB_REPO = "orifxon05/ai-asistent2" // O'zingizning repo nomingizga almashtiring
-        
+        private const val GITHUB_REPO = "orifxon05/ai-asistent2"
         const val UPDATE_URL = "https://raw.githubusercontent.com/$GITHUB_REPO/main/update/version.json"
         const val APK_DOWNLOAD_URL = "https://github.com/$GITHUB_REPO/releases/latest/download/app-release.apk"
         const val APK_FILE_NAME = "update.apk"
+
+        // Bir xil versiyani qayta-qayta yuklamaslik uchun
+        private const val PREF_UPDATE = "update_prefs"
+        private const val KEY_LAST_ATTEMPTED = "last_attempted_version_code"
     }
 
     data class UpdateInfo(
@@ -65,7 +66,17 @@ class AppUpdateChecker(private val context: Context) {
                 pInfo.versionCode
             }
 
+            // Yangi versiya bor va uni avval urinib ko'rmagan bo'lsak
             if (remoteVersionCode > currentVersionCode) {
+                val prefs = context.getSharedPreferences(PREF_UPDATE, Context.MODE_PRIVATE)
+                val lastAttempted = prefs.getInt(KEY_LAST_ATTEMPTED, 0)
+
+                if (lastAttempted >= remoteVersionCode) {
+                    // Bu versiyani avval yuklashga uringanmiz, qayta yuklamaymiz
+                    Log.d(TAG, "Update v$remoteVersionCode already attempted, skipping.")
+                    return@withContext null
+                }
+
                 UpdateInfo(remoteVersionCode, remoteVersionName, downloadUrl, changeLog)
             } else {
                 null
@@ -78,12 +89,18 @@ class AppUpdateChecker(private val context: Context) {
 
     fun downloadAndInstall(updateInfo: UpdateInfo) {
         try {
+            // Bu versiyani "urinildi" deb belgilash (qayta yuklamaslik uchun)
+            context.getSharedPreferences(PREF_UPDATE, Context.MODE_PRIVATE)
+                .edit()
+                .putInt(KEY_LAST_ATTEMPTED, updateInfo.versionCode)
+                .commit()
+
             val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
             val file = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), APK_FILE_NAME)
             if (file.exists()) file.delete()
 
             val request = DownloadManager.Request(Uri.parse(updateInfo.downloadUrl)).apply {
-                setTitle("Asistent Yangilanmoqda")
+                setTitle("JARVIS yangilanmoqda")
                 setDescription("v${updateInfo.versionName} yuklanmoqda...")
                 setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                 setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, APK_FILE_NAME)
@@ -99,13 +116,13 @@ class AppUpdateChecker(private val context: Context) {
                         if (file.exists() && file.length() > 0) {
                             installApk(file)
                         }
-                        context.unregisterReceiver(this)
+                        try { context.unregisterReceiver(this) } catch (_: Exception) {}
                     }
                 }
             }
             context.registerReceiver(receiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE))
-            
-            Toast.makeText(context, "Yangilanish yuklab olinmoqda...", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "✨ Yangilanish yuklab olinmoqda...", Toast.LENGTH_SHORT).show()
+
         } catch (e: Exception) {
             Log.e(TAG, "Download failed", e)
         }

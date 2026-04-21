@@ -260,7 +260,7 @@ class MainActivity : AppCompatActivity() {
             lifecycleScope.launch {
                 val valid = testApiKey(key)
                 if (valid) {
-                    prefs.edit().putString(KEY_API_KEY, key).apply()
+                    prefs.edit().putString(KEY_API_KEY, key).commit() // commit() - sinxron saqlash
                     showChatScreen(key)
                 } else {
                     connectBtn.text = "⚡  BOSHLASH"
@@ -343,9 +343,16 @@ class MainActivity : AppCompatActivity() {
             isFocusable = true
         }
         settingsBtn.setOnClickListener {
-            prefs.edit().remove(KEY_API_KEY).apply()
-            conversationHistory.clear()
-            showApiKeyScreen()
+            android.app.AlertDialog.Builder(this)
+                .setTitle("API kalitni o'zgartirish")
+                .setMessage("Hozirgi API kalit o'chiriladi. Davom etasizmi?")
+                .setPositiveButton("Ha") { _, _ ->
+                    prefs.edit().remove(KEY_API_KEY).commit()
+                    conversationHistory.clear()
+                    showApiKeyScreen()
+                }
+                .setNegativeButton("Yo'q", null)
+                .show()
         }
         topBar.addView(settingsBtn)
         mainLayout.addView(topBar)
@@ -641,6 +648,11 @@ class MainActivity : AppCompatActivity() {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        super.onBackPressed()
+        // Chatda orqaga bosganda ilovadan chiqmaslik — fon rejimiga o'tish
+        if (messagesLayout != null) {
+            moveTaskToBack(true)
+        } else {
+            super.onBackPressed()
+        }
     }
 }
