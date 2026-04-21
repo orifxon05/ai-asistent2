@@ -10,90 +10,106 @@ import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
-import android.view.ViewGroup
 import android.view.animation.AlphaAnimation
 import android.view.animation.Animation
 import android.view.animation.ScaleAnimation
-import android.webkit.WebChromeClient
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.example.aiasistent2.updater.AppUpdateChecker
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import android.net.http.SslError
-import android.webkit.SslErrorHandler
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var prefs: SharedPreferences
     private lateinit var rootLayout: FrameLayout
-    private var webView: WebView? = null
+
+    // Chat state
+    private val conversationHistory = mutableListOf<Pair<String, String>>()
+    private var messagesLayout: LinearLayout? = null
+    private var chatScrollView: ScrollView? = null
+    private var isTyping = false
 
     companion object {
         private const val PREF_NAME = "jarvis_prefs"
-        private const val KEY_SERVER_IP = "server_ip"
+        private const val KEY_API_KEY = "gemini_api_key"
+        private const val GEMINI_URL =
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+
+        private val httpClient = OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .build()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-
         rootLayout = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
         }
         setContentView(rootLayout)
 
-        // Saqlangan IP bormi tekshirish
-        val savedIp = prefs.getString(KEY_SERVER_IP, null)
-        if (!savedIp.isNullOrBlank()) {
-            showWebView(savedIp)
+        val savedKey = prefs.getString(KEY_API_KEY, null)
+        if (!savedKey.isNullOrBlank()) {
+            showChatScreen(savedKey)
         } else {
-            showIpInputScreen()
+            showApiKeyScreen()
         }
 
-        // Yangilanishni tekshirish
         checkForUpdates()
     }
 
     // =============================================
-    // IP KIRITISH EKRANI — Premium Jarvis dizayni
+    // API KEY INPUT SCREEN
     // =============================================
     @SuppressLint("SetTextI18n")
-    private fun showIpInputScreen() {
+    private fun showApiKeyScreen() {
         rootLayout.removeAllViews()
+        conversationHistory.clear()
 
-        // Orqa fon gradient
-        val bgGradient = GradientDrawable(
+        rootLayout.background = GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(Color.parseColor("#000000"), Color.parseColor("#001529"), Color.parseColor("#000a14"))
+            intArrayOf(
+                Color.parseColor("#000000"),
+                Color.parseColor("#000814"),
+                Color.parseColor("#000a14")
+            )
         )
-        rootLayout.background = bgGradient
 
-        // Asosiy konteyner
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setPadding(80, 100, 80, 100)
+        val scrollView = ScrollView(this).apply {
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                Gravity.CENTER
+                FrameLayout.LayoutParams.MATCH_PARENT
             )
         }
 
-        // ---- Pulsatsiyalanuvchi doira (AI signali) ----
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(80, 120, 80, 120)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        // ---- Pulse circle ----
         val pulseContainer = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(200, 200).apply {
                 gravity = Gravity.CENTER_HORIZONTAL
                 bottomMargin = 60
             }
         }
-
-        // Tashqi halqa
         val outerRing = View(this).apply {
             layoutParams = FrameLayout.LayoutParams(200, 200, Gravity.CENTER)
             background = GradientDrawable().apply {
@@ -102,19 +118,14 @@ class MainActivity : AppCompatActivity() {
                 setColor(Color.TRANSPARENT)
             }
         }
-        // Animatsiya - scale
-        val scaleAnim = ScaleAnimation(
+        outerRing.startAnimation(ScaleAnimation(
             0.8f, 1.2f, 0.8f, 1.2f,
             Animation.RELATIVE_TO_SELF, 0.5f,
             Animation.RELATIVE_TO_SELF, 0.5f
         ).apply {
-            duration = 2000
-            repeatCount = Animation.INFINITE
-            repeatMode = Animation.REVERSE
-        }
-        outerRing.startAnimation(scaleAnim)
+            duration = 2000; repeatCount = Animation.INFINITE; repeatMode = Animation.REVERSE
+        })
 
-        // Ichki doira
         val innerCircle = View(this).apply {
             layoutParams = FrameLayout.LayoutParams(120, 120, Gravity.CENTER)
             background = GradientDrawable().apply {
@@ -123,21 +134,17 @@ class MainActivity : AppCompatActivity() {
                 setStroke(2, Color.parseColor("#00E5FF"))
             }
         }
-        val alphaAnim = AlphaAnimation(0.4f, 1.0f).apply {
-            duration = 1500
-            repeatCount = Animation.INFINITE
-            repeatMode = Animation.REVERSE
-        }
-        innerCircle.startAnimation(alphaAnim)
-
+        innerCircle.startAnimation(AlphaAnimation(0.4f, 1.0f).apply {
+            duration = 1500; repeatCount = Animation.INFINITE; repeatMode = Animation.REVERSE
+        })
         pulseContainer.addView(outerRing)
         pulseContainer.addView(innerCircle)
         container.addView(pulseContainer)
 
-        // ---- JARVIS matn ----
-        val titleText = TextView(this).apply {
+        // ---- JARVIS title ----
+        container.addView(TextView(this).apply {
             text = "JARVIS"
-            textSize = 36f
+            textSize = 38f
             typeface = Typeface.create("sans-serif-thin", Typeface.BOLD)
             setTextColor(Color.parseColor("#00E5FF"))
             setShadowLayer(30f, 0f, 0f, Color.parseColor("#00E5FF"))
@@ -145,16 +152,12 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = 10
-            }
-        }
-        container.addView(titleText)
+            ).apply { bottomMargin = 8 }
+        })
 
-        // Subtitle
-        val subtitleText = TextView(this).apply {
+        container.addView(TextView(this).apply {
             text = "AI SYSTEM"
-            textSize = 14f
+            textSize = 13f
             typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
             setTextColor(Color.parseColor("#4DD0E1"))
             letterSpacing = 0.5f
@@ -162,15 +165,12 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = 80
-            }
-        }
-        container.addView(subtitleText)
+            ).apply { bottomMargin = 70 }
+        })
 
-        // ---- "Server IP kiriting" label ----
-        val ipLabel = TextView(this).apply {
-            text = "🌐  Server IP manzilini kiriting"
+        // ---- Label ----
+        container.addView(TextView(this).apply {
+            text = "🔑  Gemini API kalitini kiriting"
             textSize = 16f
             setTextColor(Color.parseColor("#80DEEA"))
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
@@ -178,55 +178,43 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = 30
-            }
-        }
-        container.addView(ipLabel)
+            ).apply { bottomMargin = 24 }
+        })
 
-        // ---- IP KIRITISH MAYDONI ----
-        val inputBg = GradientDrawable().apply {
-            cornerRadius = 30f
-            setStroke(2, Color.parseColor("#00838F"))
-            setColor(Color.parseColor("#0D1B2A"))
-        }
-
-        val ipInput = EditText(this).apply {
-            hint = "Masalan: https://xxxx-xx-xxx.ngrok-free.app"
-            setHintTextColor(Color.parseColor("#3E6B7A"))
+        // ---- API Key input ----
+        val keyInput = EditText(this).apply {
+            hint = "AIzaSy..."
+            setHintTextColor(Color.parseColor("#2A4A5A"))
             setTextColor(Color.parseColor("#E0F7FA"))
-            textSize = 15f
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
-            background = inputBg
+            textSize = 14f
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+            background = GradientDrawable().apply {
+                cornerRadius = 30f
+                setStroke(2, Color.parseColor("#00838F"))
+                setColor(Color.parseColor("#0D1B2A"))
+            }
             setPadding(50, 40, 50, 40)
             gravity = Gravity.CENTER
-            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
             isSingleLine = true
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = 20
-            }
+            ).apply { bottomMargin = 14 }
         }
-        container.addView(ipInput)
+        container.addView(keyInput)
 
-        // ---- Info matn ----
-        val infoText = TextView(this).apply {
-            text = "Google Colab yoki Ngrok orqali olingan\nserver manzilini kiriting"
+        container.addView(TextView(this).apply {
+            text = "aistudio.google.com/app/api-keys saytidan oling"
             textSize = 12f
-            setTextColor(Color.parseColor("#546E7A"))
+            setTextColor(Color.parseColor("#37474F"))
             gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = 50
-            }
-        }
-        container.addView(infoText)
+            ).apply { bottomMargin = 50 }
+        })
 
-        // ---- Status matn (xatolik uchun) ----
+        // ---- Status ----
         val statusText = TextView(this).apply {
             text = ""
             textSize = 13f
@@ -235,102 +223,77 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = 30
-            }
+            ).apply { bottomMargin = 24 }
         }
         container.addView(statusText)
 
-        // ---- ULASH TUGMASI ----
-        val connectBtnBg = GradientDrawable().apply {
-            cornerRadius = 30f
-            setColor(Color.parseColor("#00838F"))
-        }
-        val connectBtnBgPressed = GradientDrawable().apply {
-            cornerRadius = 30f
-            setColor(Color.parseColor("#00ACC1"))
-        }
-
+        // ---- Connect button ----
         val connectBtn = TextView(this).apply {
-            text = "⚡  ULASH"
+            text = "⚡  BOSHLASH"
             textSize = 18f
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
-            background = connectBtnBg
-            setPadding(0, 40, 0, 40)
+            background = GradientDrawable().apply {
+                cornerRadius = 30f
+                setColor(Color.parseColor("#00838F"))
+            }
+            setPadding(0, 42, 0, 42)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = 30
-            }
+            ).apply { bottomMargin = 30 }
             isClickable = true
             isFocusable = true
         }
 
         connectBtn.setOnClickListener {
-            var ip = ipInput.text.toString().trim()
-            if (ip.isEmpty()) {
-                statusText.text = "⚠️ Iltimos, IP manzilini kiriting!"
+            val key = keyInput.text.toString().trim()
+            if (key.isEmpty() || !key.startsWith("AIza")) {
+                statusText.text = "⚠️ Noto'g'ri API kalit formati!"
                 statusText.setTextColor(Color.parseColor("#FF5252"))
                 return@setOnClickListener
             }
+            connectBtn.text = "🔄  Tekshirilmoqda..."
+            statusText.text = ""
 
-            // Avtomatik http:// qo'shish
-            if (!ip.startsWith("http://") && !ip.startsWith("https://")) {
-                ip = "http://$ip"
+            lifecycleScope.launch {
+                val valid = testApiKey(key)
+                if (valid) {
+                    prefs.edit().putString(KEY_API_KEY, key).apply()
+                    showChatScreen(key)
+                } else {
+                    connectBtn.text = "⚡  BOSHLASH"
+                    statusText.text = "❌ API kalit noto'g'ri yoki internet yo'q"
+                    statusText.setTextColor(Color.parseColor("#FF5252"))
+                }
             }
-
-            // IP saqlash
-            prefs.edit().putString(KEY_SERVER_IP, ip).apply()
-
-            statusText.text = "🔗 Serverga ulanilmoqda..."
-            statusText.setTextColor(Color.parseColor("#00E5FF"))
-
-            // WebView ga o'tish
-            showWebView(ip)
         }
         container.addView(connectBtn)
 
-        // ---- Pastki dekor chizig'i ----
-        val bottomLine = View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(300, 2).apply {
-                gravity = Gravity.CENTER_HORIZONTAL
-                topMargin = 40
-            }
-            setBackgroundColor(Color.parseColor("#1A3A4A"))
-        }
-        container.addView(bottomLine)
-
-        val bottomText = TextView(this).apply {
-            text = "JARVIS v1.0  •  Antigravity AI"
+        container.addView(TextView(this).apply {
+            text = "JARVIS v1.2  •  Antigravity AI"
             textSize = 11f
-            setTextColor(Color.parseColor("#2A4A5A"))
+            setTextColor(Color.parseColor("#1A3A4A"))
             gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                topMargin = 15
-            }
-        }
-        container.addView(bottomText)
+            ).apply { topMargin = 20 }
+        })
 
-        rootLayout.addView(container)
+        scrollView.addView(container)
+        rootLayout.addView(scrollView)
     }
 
     // =============================================
-    // WEBVIEW — Serverga ulangandan keyin
+    // CHAT SCREEN
     // =============================================
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun showWebView(serverUrl: String) {
+    @SuppressLint("SetTextI18n")
+    private fun showChatScreen(apiKey: String) {
         rootLayout.removeAllViews()
+        rootLayout.setBackgroundColor(Color.parseColor("#000814"))
 
-        // Orqa fon
-        rootLayout.setBackgroundColor(Color.BLACK)
-
-        // Asosiy vertikal layout
         val mainLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = FrameLayout.LayoutParams(
@@ -339,254 +302,332 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        // ---- Yuqori panel (status bar) ----
+        // ---- Top bar ----
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(30, 20, 30, 20)
-            setBackgroundColor(Color.parseColor("#001529"))
+            setPadding(30, 28, 30, 28)
+            setBackgroundColor(Color.parseColor("#00050F"))
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
         }
 
-        // Status indikator (yashil doira)
         val statusDot = View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(20, 20).apply {
-                rightMargin = 15
-            }
+            layoutParams = LinearLayout.LayoutParams(18, 18).apply { rightMargin = 15 }
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
                 setColor(Color.parseColor("#00E676"))
             }
         }
-        // Pulsatsiya animatsiya
-        val dotAnim = AlphaAnimation(0.3f, 1.0f).apply {
-            duration = 1000
-            repeatCount = Animation.INFINITE
-            repeatMode = Animation.REVERSE
-        }
-        statusDot.startAnimation(dotAnim)
+        statusDot.startAnimation(AlphaAnimation(0.3f, 1.0f).apply {
+            duration = 1000; repeatCount = Animation.INFINITE; repeatMode = Animation.REVERSE
+        })
         topBar.addView(statusDot)
 
-        // Status matn
-        val statusLabel = TextView(this).apply {
-            text = "JARVIS — Ulangan"
-            textSize = 14f
+        topBar.addView(TextView(this).apply {
+            text = "JARVIS  —  Online"
+            textSize = 15f
             setTextColor(Color.parseColor("#00E5FF"))
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        topBar.addView(statusLabel)
+        })
 
-        // IP o'zgartirish tugmasi
-        val changeIpBtn = TextView(this).apply {
-            text = "⚙️ IP"
-            textSize = 13f
-            setTextColor(Color.parseColor("#4DD0E1"))
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setPadding(20, 10, 20, 10)
+        // Settings / change key
+        val settingsBtn = TextView(this).apply {
+            text = "⚙️"
+            textSize = 20f
+            setPadding(15, 8, 15, 8)
+            isClickable = true
+            isFocusable = true
+        }
+        settingsBtn.setOnClickListener {
+            prefs.edit().remove(KEY_API_KEY).apply()
+            conversationHistory.clear()
+            showApiKeyScreen()
+        }
+        topBar.addView(settingsBtn)
+        mainLayout.addView(topBar)
+
+        // Separator
+        mainLayout.addView(View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1)
+            setBackgroundColor(Color.parseColor("#001a2e"))
+        })
+
+        // ---- Messages scroll ----
+        val sv = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+            )
+            setBackgroundColor(Color.parseColor("#000814"))
+            clipToPadding = false
+            setPadding(0, 12, 0, 12)
+        }
+        chatScrollView = sv
+
+        messagesLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            setPadding(20, 8, 20, 8)
+        }
+        sv.addView(messagesLayout)
+        mainLayout.addView(sv)
+
+        // Welcome message
+        addMessage(
+            "Salom! Men JARVIS — sizning shaxsiy AI yordamchingizman. " +
+            "Savol bering yoki biror narsa haqida gaplashing, xush kelibsiz! 🤖",
+            isUser = false
+        )
+
+        // ---- Input area ----
+        val inputBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.BOTTOM
+            setPadding(16, 14, 16, 14)
+            setBackgroundColor(Color.parseColor("#00050F"))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        val inputField = EditText(this).apply {
+            hint = "Xabar yozing..."
+            setHintTextColor(Color.parseColor("#2A4A5A"))
+            setTextColor(Color.parseColor("#E0F7FA"))
+            textSize = 15f
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            maxLines = 5
             background = GradientDrawable().apply {
-                cornerRadius = 15f
+                cornerRadius = 25f
                 setStroke(1, Color.parseColor("#00838F"))
-                setColor(Color.TRANSPARENT)
+                setColor(Color.parseColor("#0D1B2A"))
             }
-            isClickable = true
-            isFocusable = true
+            setPadding(40, 28, 40, 28)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                rightMargin = 12
+            }
         }
-        changeIpBtn.setOnClickListener {
-            // WebView ni to'xtatish
-            webView?.destroy()
-            webView = null
-            // IP kiritish ekraniga qaytish
-            showIpInputScreen()
-        }
-        topBar.addView(changeIpBtn)
+        inputBar.addView(inputField)
 
-        // Qayta yuklash tugmasi
-        val reloadBtn = TextView(this).apply {
-            text = "🔄"
-            textSize = 18f
-            setPadding(20, 10, 20, 10)
+        val sendBtn = TextView(this).apply {
+            text = "➤"
+            textSize = 22f
+            setTextColor(Color.parseColor("#00E5FF"))
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#003344"))
+                setStroke(2, Color.parseColor("#00838F"))
+            }
+            val size = 130
+            layoutParams = LinearLayout.LayoutParams(size, size)
             isClickable = true
             isFocusable = true
+        }
+
+        sendBtn.setOnClickListener {
+            val msg = inputField.text.toString().trim()
+            if (msg.isEmpty() || isTyping) return@setOnClickListener
+
+            inputField.setText("")
+            addMessage(msg, isUser = true)
+            conversationHistory.add(Pair("user", msg))
+            isTyping = true
+            sendBtn.text = "⏳"
+
+            val typingView = addTypingIndicator()
+
+            lifecycleScope.launch {
+                val reply = callGemini(apiKey)
+                isTyping = false
+                sendBtn.text = "➤"
+                messagesLayout?.removeView(typingView)
+
+                if (reply != null) {
+                    addMessage(reply, isUser = false)
+                    conversationHistory.add(Pair("model", reply))
+                } else {
+                    addMessage(
+                        "⚠️ Xatolik yuz berdi. Internet yoki API kalitni tekshiring.",
+                        isUser = false
+                    )
+                }
+                scrollToBottom()
+            }
+        }
+        inputBar.addView(sendBtn)
+        mainLayout.addView(inputBar)
+
+        rootLayout.addView(mainLayout)
+    }
+
+    // =============================================
+    // ADD MESSAGE BUBBLE
+    // =============================================
+    private fun addMessage(text: String, isUser: Boolean): View {
+        val bubble = TextView(this).apply {
+            this.text = text
+            textSize = 15f
+            lineSpacingMultiplier = 1.3f
+            setTextColor(Color.parseColor(if (isUser) "#E0F7FA" else "#B2EBF2"))
+            setPadding(42, 32, 42, 32)
+            background = if (isUser) {
+                GradientDrawable(
+                    GradientDrawable.Orientation.BR_TL,
+                    intArrayOf(Color.parseColor("#006064"), Color.parseColor("#00838F"))
+                ).apply {
+                    cornerRadii = floatArrayOf(30f, 30f, 8f, 30f, 30f, 30f, 30f, 30f)
+                }
+            } else {
+                GradientDrawable().apply {
+                    setColor(Color.parseColor("#0a1628"))
+                    setStroke(1, Color.parseColor("#00838F"))
+                    cornerRadii = floatArrayOf(8f, 30f, 30f, 30f, 30f, 30f, 30f, 8f)
+                }
+            }
+        }
+
+        bubble.layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = if (isUser) Gravity.END else Gravity.START
+            topMargin = 14
+            if (isUser) leftMargin = 80 else rightMargin = 80
+        }
+        bubble.maxWidth = (resources.displayMetrics.widthPixels * 0.82).toInt()
+
+        messagesLayout?.addView(bubble)
+        scrollToBottom()
+        return bubble
+    }
+
+    // =============================================
+    // TYPING INDICATOR
+    // =============================================
+    private fun addTypingIndicator(): View {
+        val dots = TextView(this).apply {
+            text = "● ● ●"
+            textSize = 14f
+            setTextColor(Color.parseColor("#00838F"))
+            setPadding(42, 28, 42, 28)
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#0a1628"))
+                setStroke(1, Color.parseColor("#00838F"))
+                cornerRadii = floatArrayOf(8f, 30f, 30f, 30f, 30f, 30f, 30f, 8f)
+            }
+            startAnimation(AlphaAnimation(0.2f, 1.0f).apply {
+                duration = 600; repeatCount = Animation.INFINITE; repeatMode = Animation.REVERSE
+            })
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
-                leftMargin = 10
+                gravity = Gravity.START
+                topMargin = 14
+                rightMargin = 80
             }
         }
-        reloadBtn.setOnClickListener {
-            webView?.reload()
-        }
-        topBar.addView(reloadBtn)
+        messagesLayout?.addView(dots)
+        scrollToBottom()
+        return dots
+    }
 
-        mainLayout.addView(topBar)
+    private fun scrollToBottom() {
+        chatScrollView?.post { chatScrollView?.fullScroll(ScrollView.FOCUS_DOWN) }
+    }
 
-        // ---- Progress bar ----
-        val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                8
-            )
-            isIndeterminate = false
-            max = 100
-            progress = 0
-            progressDrawable.setColorFilter(
-                Color.parseColor("#00E5FF"),
-                android.graphics.PorterDuff.Mode.SRC_IN
-            )
-            visibility = View.GONE
-        }
-        mainLayout.addView(progressBar)
-
-        // ---- WebView ----
-        webView = WebView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                0, 1f
-            )
-            setBackgroundColor(Color.BLACK)
-
-            settings.apply {
-                javaScriptEnabled = true
-                domStorageEnabled = true
-                allowFileAccess = true
-                allowContentAccess = true
-                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                useWideViewPort = true
-                loadWithOverviewMode = true
-                builtInZoomControls = true
-                displayZoomControls = false
-                setSupportZoom(true)
-                cacheMode = WebSettings.LOAD_DEFAULT
-                mediaPlaybackRequiresUserGesture = false
-                javaScriptCanOpenWindowsAutomatically = true
-                setSupportMultipleWindows(false)
-                userAgentString = settings.userAgentString.replace("; wv", "")
+    // =============================================
+    // GEMINI API CALL
+    // =============================================
+    private suspend fun callGemini(apiKey: String): String? = withContext(Dispatchers.IO) {
+        try {
+            val contentsArray = JSONArray()
+            for ((role, content) in conversationHistory) {
+                contentsArray.put(
+                    JSONObject()
+                        .put("role", role)
+                        .put("parts", JSONArray().put(JSONObject().put("text", content)))
+                )
             }
 
-            webViewClient = object : WebViewClient() {
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    super.onPageFinished(view, url)
-                    statusLabel.text = "JARVIS — Ulangan ✓"
-                    statusLabel.setTextColor(Color.parseColor("#00E676"))
-                    progressBar.visibility = View.GONE
-                }
-
-                override fun onReceivedError(
-                    view: WebView?,
-                    errorCode: Int,
-                    description: String?,
-                    failingUrl: String?
-                ) {
-                    super.onReceivedError(view, errorCode, description, failingUrl)
-                    statusLabel.text = "⚠️ Xatolik — Qayta urinib ko'ring"
-                    statusLabel.setTextColor(Color.parseColor("#FF5252"))
-                    progressBar.visibility = View.GONE
-
-                    // Xatolik sahifasi ko'rsatish
-                    view?.loadData(
-                        getErrorHtml(serverUrl, description ?: "Noma'lum xatolik"),
-                        "text/html",
-                        "UTF-8"
+            val systemInstruction = JSONObject().put(
+                "parts",
+                JSONArray().put(
+                    JSONObject().put(
+                        "text",
+                        "Siz JARVIS — aqlli, do'stona va foydali AI yordamchisiz. " +
+                        "Qisqa va aniq javoblar bering. " +
+                        "Foydalanuvchi qaysi tilda yozsa — Uzbek, Russian yoki English — " +
+                        "shu tilda javob bering. Hech qachon teg yoki markdown ishlatmang."
                     )
-                }
+                )
+            )
 
-                @SuppressLint("WebViewClientOnReceivedSslError")
-                override fun onReceivedSslError(
-                    view: WebView?,
-                    handler: SslErrorHandler?,
-                    error: SslError?
-                ) {
-                    // SSL xatolariga e'tibor bermay davom etish (Ngrok/Colab uchun)
-                    handler?.proceed()
-                }
-            }
+            val body = JSONObject()
+                .put("contents", contentsArray)
+                .put("systemInstruction", systemInstruction)
+                .put(
+                    "generationConfig", JSONObject()
+                        .put("temperature", 0.85)
+                        .put("maxOutputTokens", 2048)
+                        .put("topP", 0.95)
+                )
 
-            webChromeClient = object : WebChromeClient() {
-                override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                    super.onProgressChanged(view, newProgress)
-                    if (newProgress < 100) {
-                        progressBar.visibility = View.VISIBLE
-                        progressBar.progress = newProgress
-                        statusLabel.text = "JARVIS — Yuklanmoqda... $newProgress%"
-                        statusLabel.setTextColor(Color.parseColor("#FFD740"))
-                    } else {
-                        progressBar.visibility = View.GONE
-                    }
-                }
-            }
+            val req = Request.Builder()
+                .url("$GEMINI_URL?key=$apiKey")
+                .post(body.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+
+            val response = httpClient.newCall(req).execute()
+            val resBody = response.body?.string() ?: return@withContext null
+
+            JSONObject(resBody)
+                .getJSONArray("candidates")
+                .getJSONObject(0)
+                .getJSONObject("content")
+                .getJSONArray("parts")
+                .getJSONObject(0)
+                .getString("text")
+                .trim()
+
+        } catch (e: Exception) {
+            null
         }
-        mainLayout.addView(webView)
-        rootLayout.addView(mainLayout)
-
-        // Serverga ulanish
-        webView?.loadUrl(serverUrl)
     }
 
     // =============================================
-    // XATOLIK HTML SAHIFASI
+    // TEST API KEY
     // =============================================
-    private fun getErrorHtml(serverUrl: String, error: String): String {
-        return """
-        <html>
-        <head>
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <style>
-                body {
-                    background: linear-gradient(135deg, #000000, #001529);
-                    color: #00E5FF;
-                    font-family: 'Segoe UI', sans-serif;
-                    display: flex;
-                    flex-direction: column;
-                    align-items: center;
-                    justify-content: center;
-                    height: 100vh;
-                    margin: 0;
-                    text-align: center;
-                    padding: 20px;
-                }
-                .icon { font-size: 60px; margin-bottom: 20px; }
-                h2 { color: #FF5252; font-weight: 300; }
-                p { color: #546E7A; font-size: 14px; line-height: 1.6; }
-                .url { 
-                    color: #4DD0E1; 
-                    background: #0D1B2A; 
-                    padding: 10px 20px; 
-                    border-radius: 10px; 
-                    font-size: 12px;
-                    margin: 15px 0;
-                    word-break: break-all;
-                }
-                .btn {
-                    background: #00838F;
-                    color: white;
-                    border: none;
-                    padding: 15px 40px;
-                    border-radius: 25px;
-                    font-size: 16px;
-                    margin-top: 30px;
-                    cursor: pointer;
-                }
-            </style>
-        </head>
-        <body>
-            <div class="icon">⚠️</div>
-            <h2>Serverga ulanib bo'lmadi</h2>
-            <div class="url">$serverUrl</div>
-            <p>Server ishlamayotgan bo'lishi mumkin.<br>
-            Google Colab yoki Ngrok serveringizni tekshiring.</p>
-            <p style="color:#37474F; font-size:12px;">Xato: $error</p>
-        </body>
-        </html>
-        """.trimIndent()
+    private suspend fun testApiKey(key: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val body = JSONObject().put(
+                "contents",
+                JSONArray().put(
+                    JSONObject()
+                        .put("role", "user")
+                        .put("parts", JSONArray().put(JSONObject().put("text", "Hi")))
+                )
+            )
+            val req = Request.Builder()
+                .url("$GEMINI_URL?key=$key")
+                .post(body.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+            httpClient.newCall(req).execute().isSuccessful
+        } catch (e: Exception) {
+            false
+        }
     }
 
     // =============================================
-    // YANGILANISH TEKSHIRISH
+    // UPDATE CHECKER
     // =============================================
     private fun checkForUpdates() {
         val updater = AppUpdateChecker(this)
@@ -598,20 +639,8 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // =============================================
-    // ORQAGA TUGMASI — WebView da ishlash
-    // =============================================
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (webView?.canGoBack() == true) {
-            webView?.goBack()
-        } else {
-            super.onBackPressed()
-        }
-    }
-
-    override fun onDestroy() {
-        webView?.destroy()
-        super.onDestroy()
+        super.onBackPressed()
     }
 }
