@@ -258,13 +258,13 @@ class MainActivity : AppCompatActivity() {
             statusText.text = ""
 
             lifecycleScope.launch {
-                val valid = testApiKey(key)
-                if (valid) {
-                    prefs.edit().putString(KEY_API_KEY, key).commit() // commit() - sinxron saqlash
+                val error = testApiKey(key)
+                if (error == null) {
+                    prefs.edit().putString(KEY_API_KEY, key).commit()
                     showChatScreen(key)
                 } else {
                     connectBtn.text = "⚡  BOSHLASH"
-                    statusText.text = "❌ API kalit noto'g'ri yoki internet yo'q"
+                    statusText.text = "❌ $error"
                     statusText.setTextColor(Color.parseColor("#FF5252"))
                 }
             }
@@ -580,10 +580,10 @@ class MainActivity : AppCompatActivity() {
 
             val body = JSONObject()
                 .put("contents", contentsArray)
-                .put("systemInstruction", systemInstruction)
+                .put("system_instruction", systemInstruction)
                 .put(
                     "generationConfig", JSONObject()
-                        .put("temperature", 0.85)
+                        .put("temperature", 0.7)
                         .put("maxOutputTokens", 2048)
                         .put("topP", 0.95)
                 )
@@ -611,25 +611,36 @@ class MainActivity : AppCompatActivity() {
     }
 
     // =============================================
-    // TEST API KEY
+    // TEST API KEY (Returns null if OK, else error string)
     // =============================================
-    private suspend fun testApiKey(key: String): Boolean = withContext(Dispatchers.IO) {
+    private suspend fun testApiKey(key: String): String? = withContext(Dispatchers.IO) {
         try {
             val body = JSONObject().put(
                 "contents",
                 JSONArray().put(
-                    JSONObject()
-                        .put("role", "user")
-                        .put("parts", JSONArray().put(JSONObject().put("text", "Hi")))
+                    JSONObject().put("parts", JSONArray().put(JSONObject().put("text", "Hi")))
                 )
             )
             val req = Request.Builder()
                 .url("$GEMINI_URL?key=$key")
                 .post(body.toString().toRequestBody("application/json".toMediaType()))
                 .build()
-            httpClient.newCall(req).execute().isSuccessful
+            
+            val response = httpClient.newCall(req).execute()
+            if (response.isSuccessful) return@withContext null
+            
+            val code = response.code
+            val errorBody = response.body?.string() ?: ""
+            
+            return@withContext when(code) {
+                400 -> "Bad Request (Payload error)"
+                403 -> "API Key noto'g'ri yoki ruxsat yo'q (403)"
+                404 -> "Model topilmadi (404)"
+                429 -> "Limit tugagan (Too many requests)"
+                else -> "Server xatosi: $code"
+            }
         } catch (e: Exception) {
-            false
+            "Internet aloqasi yo'q: ${e.message}"
         }
     }
 
