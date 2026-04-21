@@ -482,7 +482,7 @@ class MainActivity : AppCompatActivity() {
         val bubble = TextView(this).apply {
             this.text = text
             textSize = 15f
-            lineSpacingMultiplier = 1.3f
+            setLineSpacing(0f, 1.3f)
             setTextColor(Color.parseColor(if (isUser) "#E0F7FA" else "#B2EBF2"))
             setPadding(42, 32, 42, 32)
             background = if (isUser) {
