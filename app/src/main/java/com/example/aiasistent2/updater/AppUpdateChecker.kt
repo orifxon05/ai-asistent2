@@ -89,12 +89,6 @@ class AppUpdateChecker(private val context: Context) {
 
     fun downloadAndInstall(updateInfo: UpdateInfo) {
         try {
-            // Bu versiyani "urinildi" deb belgilash (qayta yuklamaslik uchun)
-            context.getSharedPreferences(PREF_UPDATE, Context.MODE_PRIVATE)
-                .edit()
-                .putInt(KEY_LAST_ATTEMPTED, updateInfo.versionCode)
-                .commit()
-
             val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
             val file = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), APK_FILE_NAME)
             if (file.exists()) file.delete()
@@ -114,6 +108,10 @@ class AppUpdateChecker(private val context: Context) {
                     val id = intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1) ?: return
                     if (id == downloadId) {
                         if (file.exists() && file.length() > 0) {
+                            context.getSharedPreferences(PREF_UPDATE, Context.MODE_PRIVATE)
+                                .edit()
+                                .putInt(KEY_LAST_ATTEMPTED, updateInfo.versionCode)
+                                .apply()
                             installApk(file)
                         }
                         try { context.unregisterReceiver(this) } catch (_: Exception) {}
