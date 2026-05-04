@@ -42,8 +42,9 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val PREF_NAME = "jarvis_prefs"
         private const val KEY_API_KEY = "gemini_api_key"
+        private const val GEMINI_MODEL = "gemini-2.5-flash"
         private const val GEMINI_URL =
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+            "https://generativelanguage.googleapis.com/v1beta/models/$GEMINI_MODEL:generateContent"
 
         private val httpClient = OkHttpClient.Builder()
             .connectTimeout(30, TimeUnit.SECONDS)
@@ -58,11 +59,14 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.BLACK)
         }
         setContentView(rootLayout)
+        android.util.Log.d("JARVIS", "Application started")
 
         val savedKey = prefs.getString(KEY_API_KEY, null)
         if (!savedKey.isNullOrBlank()) {
+            android.util.Log.d("JARVIS", "Saved key found: ${savedKey.take(10)}...")
             showChatScreen(savedKey)
         } else {
+            android.util.Log.d("JARVIS", "No saved key, showing setup")
             showApiKeyScreen()
         }
 
@@ -247,25 +251,34 @@ class MainActivity : AppCompatActivity() {
             isFocusable = true
         }
 
-        connectBtn.setOnClickListener {
+            connectBtn.setOnClickListener {
             val key = keyInput.text.toString().trim()
             if (key.isEmpty() || !key.startsWith("AIza")) {
-                statusText.text = "⚠️ Noto'g'ri API kalit formati!"
+                statusText.text = "⚠️ Noto'g'ri API kalit formati (AIza bilan boshlanishi kerak)!"
                 statusText.setTextColor(Color.parseColor("#FF5252"))
                 return@setOnClickListener
             }
             connectBtn.text = "🔄  Tekshirilmoqda..."
             statusText.text = ""
+            android.util.Log.d("JARVIS", "Testing API key...")
 
             lifecycleScope.launch {
-                val error = testApiKey(key)
-                if (error == null) {
-                    prefs.edit().putString(KEY_API_KEY, key).commit()
-                    showChatScreen(key)
-                } else {
+                try {
+                    val error = testApiKey(key)
+                    if (error == null) {
+                        android.util.Log.d("JARVIS", "API key valid, saving...")
+                        prefs.edit().putString(KEY_API_KEY, key).apply()
+                        showChatScreen(key)
+                    } else {
+                        android.util.Log.e("JARVIS", "API test failed: $error")
+                        connectBtn.text = "⚡  BOSHLASH"
+                        statusText.text = "❌ $error"
+                        statusText.setTextColor(Color.parseColor("#FF5252"))
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("JARVIS", "Exception during API test", e)
                     connectBtn.text = "⚡  BOSHLASH"
-                    statusText.text = "❌ $error"
-                    statusText.setTextColor(Color.parseColor("#FF5252"))
+                    statusText.text = "❌ Kutilmagan xato: ${e.message}"
                 }
             }
         }
@@ -593,19 +606,31 @@ class MainActivity : AppCompatActivity() {
                 .post(body.toString().toRequestBody("application/json".toMediaType()))
                 .build()
 
-            val response = httpClient.newCall(req).execute()
-            val resBody = response.body?.string() ?: return@withContext null
+            httpClient.newCall(req).execute().use { response ->
+                val resBody = response.body?.string() ?: return@withContext null
+                android.util.Log.d("JARVIS", "Gemini response code: ${response.code}")
 
-            JSONObject(resBody)
-                .getJSONArray("candidates")
-                .getJSONObject(0)
-                .getJSONObject("content")
-                .getJSONArray("parts")
-                .getJSONObject(0)
-                .getString("text")
-                .trim()
+                if (!response.isSuccessful) {
+                    android.util.Log.e("JARVIS", "API Error: ${response.code} $resBody")
+                    return@withContext null
+                }
 
+                val json = JSONObject(resBody)
+                val candidates = json.optJSONArray("candidates")
+                if (candidates == null || candidates.length() == 0) {
+                    val filters = json.optJSONArray("promptFeedback")
+                    return@withContext "⚠️ Model javob bermadi (xavfsizlik filtri yoki boshqa cheklov)."
+                }
+
+                candidates.getJSONObject(0)
+                    .getJSONObject("content")
+                    .getJSONArray("parts")
+                    .getJSONObject(0)
+                    .getString("text")
+                    .trim()
+            }
         } catch (e: Exception) {
+            android.util.Log.e("JARVIS", "callGemini error", e)
             null
         }
     }
@@ -626,21 +651,24 @@ class MainActivity : AppCompatActivity() {
                 .post(body.toString().toRequestBody("application/json".toMediaType()))
                 .build()
             
-            val response = httpClient.newCall(req).execute()
-            if (response.isSuccessful) return@withContext null
-            
-            val code = response.code
-            val errorBody = response.body?.string() ?: ""
-            
-            return@withContext when(code) {
-                400 -> "Bad Request (Payload error)"
-                403 -> "API Key noto'g'ri yoki ruxsat yo'q (403)"
-                404 -> "Model topilmadi (404)"
-                429 -> "Limit tugagan (Too many requests)"
-                else -> "Server xatosi: $code"
+            httpClient.newCall(req).execute().use { response ->
+                if (response.isSuccessful) return@withContext null
+                
+                val code = response.code
+                val resStr = response.body?.string() ?: ""
+                android.util.Log.e("JARVIS", "Test Key failed: $code $resStr")
+
+                return@withContext when(code) {
+                    400 -> "So'rovda xato (400)"
+                    403 -> "API Key noto'g'ri yoki ruxsat yo'q (403)"
+                    404 -> "Gemini modeli topilmadi: $GEMINI_MODEL (404)"
+                    429 -> "Limit tugagan yoki tezkor so'rovlar (429)"
+                    else -> "Xato: $code"
+                }
             }
         } catch (e: Exception) {
-            "Internet aloqasi yo'q: ${e.message}"
+            android.util.Log.e("JARVIS", "testApiKey exception", e)
+            "Ulanishda xato: ${e.localizedMessage}"
         }
     }
 

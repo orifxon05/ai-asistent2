@@ -1,6 +1,6 @@
 {
-  "versionCode": 7,
-  "versionName": "1.6",
+  "versionCode": 8,
+  "versionName": "1.7",
   "downloadUrl": "https://github.com/orifxon05/ai-asistent2/releases/latest/download/app-release.apk",
-  "changeLog": "Diagnostika qo'shildi: Endi ulanishda xato bo'lsa, aniq server kodini ko'rsatadi."
+  "changeLog": "Gemini modeli gemini-2.5-flash ga yangilandi va API tekshirishdagi 404 xatosi tuzatildi."
 }
