@@ -1,12 +1,22 @@
 package com.example.aiasistent2
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.media.AudioManager
+import android.net.Uri
 import android.os.Bundle
+import android.provider.ContactsContract
+import android.provider.MediaStore
+import android.provider.Settings
+import android.speech.RecognizerIntent
+import android.speech.tts.TextToSpeech
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
@@ -15,6 +25,8 @@ import android.view.animation.Animation
 import android.view.animation.ScaleAnimation
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.example.aiasistent2.updater.AppUpdateChecker
 import kotlinx.coroutines.Dispatchers
@@ -26,12 +38,16 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private lateinit var prefs: SharedPreferences
     private lateinit var rootLayout: FrameLayout
+    private var tts: TextToSpeech? = null
+    private var activeApiKey: String? = null
+    private var activeSendButton: TextView? = null
 
     // Chat state
     private val conversationHistory = mutableListOf<Pair<String, String>>()
@@ -43,6 +59,8 @@ class MainActivity : AppCompatActivity() {
         private const val PREF_NAME = "jarvis_prefs"
         private const val KEY_API_KEY = "gemini_api_key"
         private const val GEMINI_MODEL = "gemini-2.5-flash"
+        private const val REQ_SPEECH = 101
+        private const val REQ_PERMISSIONS = 102
         private const val GEMINI_URL =
             "https://generativelanguage.googleapis.com/v1beta/models/$GEMINI_MODEL:generateContent"
 
@@ -59,6 +77,8 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.BLACK)
         }
         setContentView(rootLayout)
+        tts = TextToSpeech(this, this)
+        requestAssistantPermissions()
         android.util.Log.d("JARVIS", "Application started")
 
         val savedKey = prefs.getString(KEY_API_KEY, null)
@@ -304,6 +324,7 @@ class MainActivity : AppCompatActivity() {
     // =============================================
     @SuppressLint("SetTextI18n")
     private fun showChatScreen(apiKey: String) {
+        activeApiKey = apiKey
         rootLayout.removeAllViews()
         rootLayout.setBackgroundColor(Color.parseColor("#000814"))
 
@@ -436,6 +457,26 @@ class MainActivity : AppCompatActivity() {
         }
         inputBar.addView(inputField)
 
+        val micBtn = TextView(this).apply {
+            text = "MIC"
+            textSize = 14f
+            setTextColor(Color.parseColor("#00E5FF"))
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#003344"))
+                setStroke(2, Color.parseColor("#00838F"))
+            }
+            val size = 130
+            layoutParams = LinearLayout.LayoutParams(size, size).apply { rightMargin = 12 }
+            isClickable = true
+            isFocusable = true
+        }
+        micBtn.setOnClickListener {
+            if (!isTyping) startVoiceInput()
+        }
+        inputBar.addView(micBtn)
+
         val sendBtn = TextView(this).apply {
             text = "➤"
             textSize = 22f
@@ -451,6 +492,7 @@ class MainActivity : AppCompatActivity() {
             isClickable = true
             isFocusable = true
         }
+        activeSendButton = sendBtn
 
         sendBtn.setOnClickListener {
             val msg = inputField.text.toString().trim()
@@ -481,6 +523,12 @@ class MainActivity : AppCompatActivity() {
                 }
                 scrollToBottom()
             }
+        }
+        sendBtn.setOnClickListener {
+            val msg = inputField.text.toString().trim()
+            if (msg.isEmpty() || isTyping) return@setOnClickListener
+            inputField.setText("")
+            submitUserMessage(msg, apiKey, sendBtn)
         }
         inputBar.addView(sendBtn)
         mainLayout.addView(inputBar)
@@ -564,6 +612,228 @@ class MainActivity : AppCompatActivity() {
         chatScrollView?.post { chatScrollView?.fullScroll(ScrollView.FOCUS_DOWN) }
     }
 
+    private fun submitUserMessage(msg: String, apiKey: String, sendBtn: TextView? = activeSendButton) {
+        addMessage(msg, isUser = true)
+        conversationHistory.add(Pair("user", msg))
+
+        val localResult = executeLocalCommand(msg)
+        if (localResult != null) {
+            addAssistantMessage(localResult)
+            return
+        }
+
+        isTyping = true
+        sendBtn?.text = "..."
+        val typingView = addTypingIndicator()
+
+        lifecycleScope.launch {
+            val rawReply = callGemini(apiKey)
+            isTyping = false
+            sendBtn?.text = ">"
+            messagesLayout?.removeView(typingView)
+
+            val reply = when {
+                rawReply == null -> "Xatolik yuz berdi. Internet yoki API kalitni tekshiring."
+                else -> executeToolJson(rawReply) ?: rawReply
+            }
+            addAssistantMessage(reply)
+            scrollToBottom()
+        }
+    }
+
+    private fun addAssistantMessage(text: String) {
+        addMessage(text, isUser = false)
+        conversationHistory.add(Pair("model", text))
+        speak(text)
+    }
+
+    private fun startVoiceInput() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestAssistantPermissions()
+            Toast.makeText(this, "Mikrofon ruxsatini bering", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "uz-UZ")
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "Buyruqni ayting")
+        }
+        try {
+            startActivityForResult(intent, REQ_SPEECH)
+        } catch (e: Exception) {
+            addAssistantMessage("Telefonda ovozni matnga aylantirish servisi topilmadi.")
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_SPEECH && resultCode == RESULT_OK) {
+            val text = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.trim()
+            val key = activeApiKey
+            if (!text.isNullOrBlank() && !key.isNullOrBlank()) {
+                submitUserMessage(text, key)
+            }
+        }
+    }
+
+    private fun requestAssistantPermissions() {
+        val permissions = arrayOf(
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.READ_CONTACTS,
+            Manifest.permission.CALL_PHONE,
+            Manifest.permission.CAMERA
+        ).filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (permissions.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, permissions.toTypedArray(), REQ_PERMISSIONS)
+        }
+    }
+
+    override fun onInit(status: Int) {
+        if (status == TextToSpeech.SUCCESS) {
+            val result = tts?.setLanguage(Locale("uz", "UZ"))
+            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                tts?.language = Locale.US
+            }
+        }
+    }
+
+    private fun speak(text: String) {
+        tts?.speak(text.take(500), TextToSpeech.QUEUE_FLUSH, null, "jarvis_reply")
+    }
+
+    private fun executeLocalCommand(raw: String): String? {
+        val text = raw.lowercase(Locale.ROOT)
+        return when {
+            listOf("galereya", "gallery", "rasm", "foto").any { text.contains(it) } -> {
+                openGallery()
+                "Galereyani ochdim."
+            }
+            listOf("kamera", "camera").any { text.contains(it) } -> {
+                openCamera()
+                "Kamerani ochdim."
+            }
+            listOf("sozlama", "settings", "nastroyka").any { text.contains(it) } -> {
+                startActivity(Intent(Settings.ACTION_SETTINGS))
+                "Sozlamalarni ochdim."
+            }
+            listOf("youtube", "telegram", "whatsapp", "chrome", "instagram").any { text.contains(it) } -> {
+                val app = listOf("youtube", "telegram", "whatsapp", "chrome", "instagram").first { text.contains(it) }
+                if (openAppByName(app)) "$app ilovasini ochdim." else "$app topilmadi."
+            }
+            text.contains("qidir") || text.contains("search") || text.contains("google") -> {
+                val query = raw.replace("qidir", "", true).replace("search", "", true).replace("google", "", true).trim()
+                openWebSearch(if (query.isBlank()) raw else query)
+                "Qidiruvni ochdim."
+            }
+            text.contains("telefon qil") || text.contains("qo'ng'iroq") || text.contains("qongiroq") || text.contains("call") -> {
+                val name = raw
+                    .replace("telefon qil", "", true)
+                    .replace("qo'ng'iroq qil", "", true)
+                    .replace("qongiroq qil", "", true)
+                    .replace("call", "", true)
+                    .replace("kontaktimga", "", true)
+                    .replace("kontaktga", "", true)
+                    .trim()
+                callContact(name)
+            }
+            text.contains("ovozni ko'tar") || text.contains("volume up") -> {
+                changeVolume(AudioManager.ADJUST_RAISE)
+                "Ovozni ko'tardim."
+            }
+            text.contains("ovozni pasaytir") || text.contains("volume down") -> {
+                changeVolume(AudioManager.ADJUST_LOWER)
+                "Ovozni pasaytirdim."
+            }
+            else -> null
+        }
+    }
+
+    private fun executeToolJson(rawReply: String): String? {
+        val jsonText = rawReply.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+        val json = try { JSONObject(jsonText) } catch (_: Exception) { return null }
+        val tool = json.optString("tool")
+        val args = json.optJSONObject("args") ?: JSONObject()
+        return when (tool) {
+            "open_gallery" -> { openGallery(); "Galereyani ochdim." }
+            "open_camera" -> { openCamera(); "Kamerani ochdim." }
+            "open_settings" -> { startActivity(Intent(Settings.ACTION_SETTINGS)); "Sozlamalarni ochdim." }
+            "open_app" -> {
+                val app = args.optString("app_name")
+                if (openAppByName(app)) "$app ilovasini ochdim." else "$app topilmadi."
+            }
+            "call_contact" -> callContact(args.optString("contact_name"))
+            "web_search" -> { openWebSearch(args.optString("query")); "Qidiruvni ochdim." }
+            else -> null
+        }
+    }
+
+    private fun openGallery() {
+        val intent = Intent(Intent.ACTION_VIEW, MediaStore.Images.Media.EXTERNAL_CONTENT_URI).apply {
+            type = "image/*"
+        }
+        startActivity(intent)
+    }
+
+    private fun openCamera() {
+        startActivity(Intent(MediaStore.ACTION_IMAGE_CAPTURE))
+    }
+
+    private fun openWebSearch(query: String) {
+        val uri = Uri.parse("https://www.google.com/search?q=${Uri.encode(query)}")
+        startActivity(Intent(Intent.ACTION_VIEW, uri))
+    }
+
+    private fun openAppByName(appName: String): Boolean {
+        if (appName.isBlank()) return false
+        val apps = packageManager.getInstalledApplications(PackageManager.GET_META_DATA)
+        val match = apps.firstOrNull {
+            packageManager.getApplicationLabel(it).toString().lowercase(Locale.ROOT).contains(appName.lowercase(Locale.ROOT)) ||
+                it.packageName.lowercase(Locale.ROOT).contains(appName.lowercase(Locale.ROOT))
+        } ?: return false
+        val intent = packageManager.getLaunchIntentForPackage(match.packageName) ?: return false
+        startActivity(intent)
+        return true
+    }
+
+    private fun callContact(name: String): String {
+        if (name.isBlank()) return "Kimga qo'ng'iroq qilishni ayting."
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            requestAssistantPermissions()
+            return "Kontaktlarni o'qish ruxsatini bering."
+        }
+
+        val projection = arrayOf(
+            ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+            ContactsContract.CommonDataKinds.Phone.NUMBER
+        )
+        contentResolver.query(ContactsContract.CommonDataKinds.Phone.CONTENT_URI, projection, null, null, null)?.use { cursor ->
+            val nameIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+            val numberIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+            while (cursor.moveToNext()) {
+                val contactName = cursor.getString(nameIndex) ?: continue
+                if (contactName.lowercase(Locale.ROOT).contains(name.lowercase(Locale.ROOT))) {
+                    val number = cursor.getString(numberIndex)
+                    val intent = if (ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) {
+                        Intent(Intent.ACTION_CALL, Uri.parse("tel:$number"))
+                    } else {
+                        Intent(Intent.ACTION_DIAL, Uri.parse("tel:$number"))
+                    }
+                    startActivity(intent)
+                    return "$contactName kontaktiga qo'ng'iroq qilyapman."
+                }
+            }
+        }
+        return "$name kontaktlardan topilmadi."
+    }
+
+    private fun changeVolume(direction: Int) {
+        val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, AudioManager.FLAG_SHOW_UI)
+    }
+
     // =============================================
     // GEMINI API CALL
     // =============================================
@@ -583,10 +853,16 @@ class MainActivity : AppCompatActivity() {
                 JSONArray().put(
                     JSONObject().put(
                         "text",
-                        "Siz JARVIS — aqlli, do'stona va foydali AI yordamchisiz. " +
-                        "Qisqa va aniq javoblar bering. " +
-                        "Foydalanuvchi qaysi tilda yozsa — Uzbek, Russian yoki English — " +
-                        "shu tilda javob bering. Hech qachon teg yoki markdown ishlatmang."
+                        "Siz JARVIS — Android telefon assistantisiz. " +
+                        "Hech qachon 'telefonni boshqara olmayman' demang. " +
+                        "Agar foydalanuvchi telefon amalini so'rasa, faqat JSON qaytaring: " +
+                        "{\"tool\":\"open_gallery\",\"args\":{}}, " +
+                        "{\"tool\":\"open_camera\",\"args\":{}}, " +
+                        "{\"tool\":\"open_settings\",\"args\":{}}, " +
+                        "{\"tool\":\"open_app\",\"args\":{\"app_name\":\"YouTube\"}}, " +
+                        "{\"tool\":\"call_contact\",\"args\":{\"contact_name\":\"Jahongir\"}}, " +
+                        "{\"tool\":\"web_search\",\"args\":{\"query\":\"...\"}}. " +
+                        "Oddiy savol bo'lsa qisqa javob bering. Foydalanuvchi tilida gapiring."
                     )
                 )
             )
@@ -693,5 +969,11 @@ class MainActivity : AppCompatActivity() {
         } else {
             super.onBackPressed()
         }
+    }
+
+    override fun onDestroy() {
+        tts?.stop()
+        tts?.shutdown()
+        super.onDestroy()
     }
 }

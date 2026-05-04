@@ -1,6 +1,6 @@
 {
-  "versionCode": 9,
-  "versionName": "1.8",
+  "versionCode": 10,
+  "versionName": "1.9",
   "downloadUrl": "https://github.com/orifxon05/ai-asistent2/releases/latest/download/app-release.apk",
-  "changeLog": "Gemini 404 xatosi tuzatildi va updater qayta yuklashni bloklab qo'ymasligi uchun yaxshilandi."
+  "changeLog": "Ovozli buyruqlar, telefon actionlari va JARVIS uslubidagi tool bajarish qo'shildi."
 }
