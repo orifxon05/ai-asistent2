@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">ai asistent2</string>
+    <string name="accessibility_service_description">JARVIS ekrandagi tugmalarni bosish, matn yozish va scroll qilish uchun accessibility ruxsatidan foydalanadi.</string>
 </resources>

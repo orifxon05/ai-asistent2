@@ -1,6 +1,6 @@
 {
-  "versionCode": 10,
-  "versionName": "1.9",
+  "versionCode": 11,
+  "versionName": "2.0",
   "downloadUrl": "https://github.com/orifxon05/ai-asistent2/releases/latest/download/app-release.apk",
-  "changeLog": "Ovozli buyruqlar, telefon actionlari va JARVIS uslubidagi tool bajarish qo'shildi."
+  "changeLog": "Accessibility boshqaruv, ko'p qadamli tool bajarish, ovozli va yozma chat rejimlari qo'shildi."
 }

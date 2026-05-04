@@ -23,6 +23,7 @@ import android.view.View
 import android.view.animation.AlphaAnimation
 import android.view.animation.Animation
 import android.view.animation.ScaleAnimation
+import android.view.inputmethod.InputMethodManager
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -457,6 +458,28 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
         inputBar.addView(inputField)
 
+        val chatBtn = TextView(this).apply {
+            text = "CHAT"
+            textSize = 12f
+            setTextColor(Color.parseColor("#00E5FF"))
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#003344"))
+                setStroke(2, Color.parseColor("#00838F"))
+            }
+            val size = 130
+            layoutParams = LinearLayout.LayoutParams(size, size).apply { rightMargin = 12 }
+            isClickable = true
+            isFocusable = true
+        }
+        chatBtn.setOnClickListener {
+            inputField.requestFocus()
+            (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                .showSoftInput(inputField, InputMethodManager.SHOW_IMPLICIT)
+        }
+        inputBar.addView(chatBtn)
+
         val micBtn = TextView(this).apply {
             text = "MIC"
             textSize = 14f
@@ -476,6 +499,26 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             if (!isTyping) startVoiceInput()
         }
         inputBar.addView(micBtn)
+
+        val controlBtn = TextView(this).apply {
+            text = "A11Y"
+            textSize = 12f
+            setTextColor(Color.parseColor("#00E5FF"))
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#003344"))
+                setStroke(2, Color.parseColor("#00838F"))
+            }
+            val size = 130
+            layoutParams = LinearLayout.LayoutParams(size, size).apply { rightMargin = 12 }
+            isClickable = true
+            isFocusable = true
+        }
+        controlBtn.setOnClickListener {
+            openAccessibilitySettings()
+        }
+        inputBar.addView(controlBtn)
 
         val sendBtn = TextView(this).apply {
             text = "➤"
@@ -634,7 +677,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
             val reply = when {
                 rawReply == null -> "Xatolik yuz berdi. Internet yoki API kalitni tekshiring."
-                else -> executeToolJson(rawReply) ?: rawReply
+                else -> executeToolPlan(rawReply) ?: rawReply
             }
             addAssistantMessage(reply)
             scrollToBottom()
@@ -747,27 +790,102 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 changeVolume(AudioManager.ADJUST_LOWER)
                 "Ovozni pasaytirdim."
             }
+            text.contains("orqaga") || text.contains("back") -> runAccessibilityAction("press_back", JSONObject())
+            text.contains("home") || text.contains("bosh ekran") -> runAccessibilityAction("press_home", JSONObject())
+            text.contains("pastga") || text.contains("scroll down") -> runAccessibilityAction("scroll_down", JSONObject())
+            text.contains("yuqoriga") || text.contains("scroll up") -> runAccessibilityAction("scroll_up", JSONObject())
+            text.contains("ekranni o'qi") || text.contains("ekranda nima") || text.contains("screen text") -> runAccessibilityAction("read_screen", JSONObject())
+            text.startsWith("bos ") || text.startsWith("bosing ") || text.startsWith("tap ") -> {
+                val target = raw
+                    .replace("bosing", "", true)
+                    .replace("bos", "", true)
+                    .replace("tap", "", true)
+                    .trim()
+                runAccessibilityAction("tap_text", JSONObject().put("text", target))
+            }
+            text.startsWith("yoz ") || text.startsWith("type ") -> {
+                val value = raw
+                    .replace("yoz", "", true)
+                    .replace("type", "", true)
+                    .trim()
+                runAccessibilityAction("type_text", JSONObject().put("text", value))
+            }
+            text.contains("accessibility") || text.contains("ruxsat") -> {
+                openAccessibilitySettings()
+                "Accessibility sozlamasini ochdim. JARVIS xizmatini yoqing."
+            }
             else -> null
         }
     }
 
-    private fun executeToolJson(rawReply: String): String? {
+    private fun executeToolPlan(rawReply: String): String? {
         val jsonText = rawReply.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
         val json = try { JSONObject(jsonText) } catch (_: Exception) { return null }
+        val steps = json.optJSONArray("steps")
+        if (steps != null) {
+            val results = mutableListOf<String>()
+            for (i in 0 until steps.length()) {
+                val step = steps.optJSONObject(i) ?: continue
+                val result = executeSingleTool(step.optString("tool"), step.optJSONObject("args") ?: step.optJSONObject("parameters") ?: JSONObject())
+                if (result.isNotBlank()) results.add(result)
+            }
+            return if (results.isEmpty()) "Vazifa bajarildi." else results.last()
+        }
         val tool = json.optString("tool")
         val args = json.optJSONObject("args") ?: JSONObject()
+        val result = executeSingleTool(tool, args)
+        return result.ifBlank { null }
+    }
+
+    private fun executeSingleTool(tool: String, args: JSONObject): String {
         return when (tool) {
             "open_gallery" -> { openGallery(); "Galereyani ochdim." }
             "open_camera" -> { openCamera(); "Kamerani ochdim." }
             "open_settings" -> { startActivity(Intent(Settings.ACTION_SETTINGS)); "Sozlamalarni ochdim." }
+            "open_accessibility_settings" -> { openAccessibilitySettings(); "Accessibility sozlamasini ochdim. JARVIS xizmatini yoqing." }
             "open_app" -> {
                 val app = args.optString("app_name")
                 if (openAppByName(app)) "$app ilovasini ochdim." else "$app topilmadi."
             }
             "call_contact" -> callContact(args.optString("contact_name"))
             "web_search" -> { openWebSearch(args.optString("query")); "Qidiruvni ochdim." }
-            else -> null
+            "tap_text", "type_text", "press_back", "press_home", "press_recents", "scroll_down", "scroll_up", "read_screen" -> {
+                runAccessibilityAction(tool, args)
+            }
+            else -> ""
         }
+    }
+
+    private fun runAccessibilityAction(tool: String, args: JSONObject): String {
+        val service = JarvisAccessibilityService.instance
+        if (service == null) {
+            openAccessibilitySettings()
+            return "Telefonni to'liq boshqarish uchun Accessibility oynasida JARVIS xizmatini yoqing."
+        }
+        return when (tool) {
+            "tap_text" -> {
+                val text = args.optString("text")
+                if (service.clickText(text)) "$text bosildi." else "$text ekranda topilmadi."
+            }
+            "type_text" -> {
+                val text = args.optString("text")
+                if (service.typeIntoFocused(text)) "Matn yozildi." else "Yozish maydoni fokusda emas."
+            }
+            "press_back" -> if (service.back()) "Orqaga qaytdim." else "Orqaga qaytish bajarilmadi."
+            "press_home" -> if (service.home()) "Bosh ekranga qaytdim." else "Home bajarilmadi."
+            "press_recents" -> if (service.recents()) "Oxirgi ilovalarni ochdim." else "Recent bajarilmadi."
+            "scroll_down" -> if (service.scrollForward()) "Pastga scroll qildim." else "Scroll qilinadigan joy topilmadi."
+            "scroll_up" -> if (service.scrollBackward()) "Yuqoriga scroll qildim." else "Scroll qilinadigan joy topilmadi."
+            "read_screen" -> {
+                val screen = service.screenText()
+                if (screen.isBlank()) "Ekrandagi matn topilmadi." else "Ekranda: ${screen.take(600)}"
+            }
+            else -> "Noma'lum accessibility action."
+        }
+    }
+
+    private fun openAccessibilitySettings() {
+        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
     }
 
     private fun openGallery() {
@@ -853,16 +971,15 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 JSONArray().put(
                     JSONObject().put(
                         "text",
-                        "Siz JARVIS — Android telefon assistantisiz. " +
-                        "Hech qachon 'telefonni boshqara olmayman' demang. " +
-                        "Agar foydalanuvchi telefon amalini so'rasa, faqat JSON qaytaring: " +
-                        "{\"tool\":\"open_gallery\",\"args\":{}}, " +
-                        "{\"tool\":\"open_camera\",\"args\":{}}, " +
-                        "{\"tool\":\"open_settings\",\"args\":{}}, " +
-                        "{\"tool\":\"open_app\",\"args\":{\"app_name\":\"YouTube\"}}, " +
-                        "{\"tool\":\"call_contact\",\"args\":{\"contact_name\":\"Jahongir\"}}, " +
-                        "{\"tool\":\"web_search\",\"args\":{\"query\":\"...\"}}. " +
-                        "Oddiy savol bo'lsa qisqa javob bering. Foydalanuvchi tilida gapiring."
+                        "Siz JARVIS, Android telefonni boshqaradigan assistantisiz. " +
+                        "Mark-XXXIX protokoli: tez, aniq, foydalanuvchi tilida javob berasiz. " +
+                        "Telefon amalini so'rasa 'qila olmayman' demang; tool JSON qaytaring. " +
+                        "Bitta amal uchun: {\"tool\":\"tool_name\",\"args\":{...}}. " +
+                        "Murakkab 2-5 qadamli vazifa uchun: {\"steps\":[{\"tool\":\"open_app\",\"args\":{\"app_name\":\"Telegram\"}},{\"tool\":\"tap_text\",\"args\":{\"text\":\"Jahongir\"}}]}. " +
+                        "Toollar: open_gallery, open_camera, open_settings, open_accessibility_settings, open_app(app_name), call_contact(contact_name), web_search(query), " +
+                        "tap_text(text), type_text(text), press_back, press_home, press_recents, scroll_down, scroll_up, read_screen. " +
+                        "Agar oddiy savol bo'lsa JSON emas, qisqa tabiiy javob bering. " +
+                        "Agar ekranni bosish yoki yozish kerak bo'lsa accessibility toollardan foydalaning."
                     )
                 )
             )
