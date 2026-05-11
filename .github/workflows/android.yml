@@ -54,8 +54,9 @@ jobs:
         name: "ai asistent2 v${{ steps.version.outputs.version }}"
         body: |
           ## Yangilanishlar v${{ steps.version.outputs.version }}
-          - SSL xatoliklarni tuzatildi (10% da qotib qolish muammosi)
-          - WebView Ngrok/Colab manzillari bilan ishlashi yaxshilandi
+          - MARK XXX kompyuter dizayni Android uchun qayta qurildi
+          - Animatsiyali HUD, scan halqalar va terminal chat panel qo'shildi
+          - API setup, mikrofon va Gemini chat telefon ekraniga moslandi
         files: app-release.apk
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

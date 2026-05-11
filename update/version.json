@@ -1,6 +1,6 @@
 {
-  "versionCode": 11,
-  "versionName": "2.0",
+  "versionCode": 13,
+  "versionName": "3.0",
   "downloadUrl": "https://github.com/orifxon05/ai-asistent2/releases/latest/download/app-release.apk",
-  "changeLog": "Accessibility boshqaruv, ko'p qadamli tool bajarish, ovozli va yozma chat rejimlari qo'shildi."
+  "changeLog": "MARK XXX kompyuter dizayni Android uchun qayta qurildi: HUD animatsiya, terminal chat panel, API setup, mikrofon va Gemini chat yangilandi."
 }
