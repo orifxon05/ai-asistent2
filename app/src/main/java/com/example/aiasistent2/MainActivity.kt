@@ -312,9 +312,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         chatScrollView = sv
         messagesLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
             )
         }
         sv.addView(messagesLayout)

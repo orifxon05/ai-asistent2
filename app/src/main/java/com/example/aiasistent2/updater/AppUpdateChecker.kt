@@ -118,7 +118,11 @@ class AppUpdateChecker(private val context: Context) {
                     }
                 }
             }
-            context.registerReceiver(receiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(receiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), Context.RECEIVER_EXPORTED)
+            } else {
+                context.registerReceiver(receiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE))
+            }
             Toast.makeText(context, "✨ Yangilanish yuklab olinmoqda...", Toast.LENGTH_SHORT).show()
 
         } catch (e: Exception) {
@@ -133,6 +137,10 @@ class AppUpdateChecker(private val context: Context) {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(intent)
+        try {
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "Install failed", e)
+        }
     }
 }

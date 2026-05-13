@@ -1,6 +1,6 @@
 {
-  "versionCode": 17,
-  "versionName": "3.4",
+  "versionCode": 18,
+  "versionName": "3.5",
   "downloadUrl": "https://github.com/orifxon05/ai-asistent2/releases/latest/download/app-release.apk",
-  "changeLog": "JARVIS ovoz bilan gapiradi, ochilganda tinglashga tayyor bo'ladi, HUD bosilganda bevosita eshitadi va voice recognizer xatolari kamaytirildi."
+  "changeLog": "Chat oynasidagi qulash xatosi (ClassCastException) bartaraf etildi. Android 14+ uchun yangilanish ruxsatlari tuzatildi."
 }
