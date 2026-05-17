@@ -74,6 +74,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var tts: TextToSpeech? = null
     private var ttsReady = false
 
+    // FIX: Track whether chat screen is active to avoid duplicate speak calls
+    private var isChatScreenReady = false
+
     companion object {
         private const val PREF_NAME = "jarvis_prefs"
         private const val KEY_API_KEY = "gemini_api_key"
@@ -100,7 +103,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         rootLayout = FrameLayout(this).apply { setBackgroundColor(JarvisHudView.C_BG) }
         setContentView(rootLayout)
         supportActionBar?.hide()
+
+        // FIX: Init TTS once, before showing any screen
         tts = TextToSpeech(this, this)
+
         requestNotificationPermission()
         requestAssistantPermissions()
 
@@ -110,13 +116,17 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         } else {
             showChatScreen(savedKey)
         }
-        checkForUpdates()
+        // FIX: checkForUpdates only after chat is set up, not during API key screen
     }
 
     @SuppressLint("SetTextI18n")
     private fun showApiKeyScreen() {
+        isChatScreenReady = false
         rootLayout.removeAllViews()
         conversationHistory.clear()
+
+        // FIX: Safely stop listening before clearing screen
+        safeStopListening()
 
         val hud = JarvisHudView(this).apply {
             statusText = "INITIALISING"
@@ -212,6 +222,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     @SuppressLint("SetTextI18n")
     private fun showChatScreen(apiKey: String) {
+        isChatScreenReady = false
         rootLayout.removeAllViews()
 
         val main = LinearLayout(this).apply {
@@ -398,16 +409,30 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         main.addView(controlDeck)
         rootLayout.addView(main)
 
+        isChatScreenReady = true
+
         addMessage("SYS: J.A.R.V.I.S online. MARK XXX mobile systems ready.", false)
-        speak("JARVIS online. Buyruq berishingiz mumkin.")
+
+        // FIX: Only speak if TTS is ready, otherwise onInit() will handle it
+        if (ttsReady) {
+            speak("JARVIS online. Buyruq berishingiz mumkin.")
+        }
+
+        // FIX: Auto-listen after screen is fully built, with proper checks
         lifecycleScope.launch {
-            delay(800)
-            if (!isListening && !isTyping &&
-                ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+            delay(1200)
+            if (isChatScreenReady && !isListening && !isTyping &&
+                ContextCompat.checkSelfPermission(
+                    this@MainActivity,
+                    Manifest.permission.RECORD_AUDIO
+                ) == PackageManager.PERMISSION_GRANTED
             ) {
                 startListening()
             }
         }
+
+        // FIX: Check updates only after chat screen is ready
+        checkForUpdates()
     }
 
     private fun showApiResetDialog() {
@@ -424,32 +449,55 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun handleMicClick() {
         if (isListening) {
-            stopListening()
+            safeStopListening()
             return
         }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED
         ) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), MIC_PERMISSION_CODE)
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.RECORD_AUDIO),
+                MIC_PERMISSION_CODE
+            )
             return
         }
         startListening()
     }
 
     private fun startListening() {
+        // FIX: Guard - don't listen if chat screen is not active
+        if (!isChatScreenReady) return
+
+        // FIX: Check SpeechRecognizer availability before creating
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            addMessage("SYS: Speech recognition not available on this device.", false)
+            return
+        }
+
         isListening = true
         lastPartialSpeech = ""
         hudView?.statusText = "LISTENING"
         micBtn?.text = "REC"
-        speak("Eshityapman.")
         micBtn?.startAnimation(AlphaAnimation(0.35f, 1f).apply {
             duration = 450
             repeatCount = Animation.INFINITE
             repeatMode = Animation.REVERSE
         })
 
-        speechRecognizer?.destroy()
-        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
+        // FIX: Safely destroy previous recognizer
+        safeDestroyRecognizer()
+
+        try {
+            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
+        } catch (e: Exception) {
+            isListening = false
+            hudView?.statusText = "ONLINE"
+            micBtn?.clearAnimation()
+            micBtn?.text = "MIC"
+            return
+        }
+
         speechRecognizer?.setRecognitionListener(object : RecognitionListener {
             override fun onResults(results: Bundle?) {
                 val text = results
@@ -457,7 +505,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     ?.firstOrNull()
                     ?.ifBlank { lastPartialSpeech }
                     ?: lastPartialSpeech
-                stopListening()
+                safeStopListening()
                 if (text.isNotBlank()) {
                     val apiKey = prefs.getString(KEY_API_KEY, "").orEmpty()
                     addMessage("You: $text", true)
@@ -467,7 +515,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     lifecycleScope.launch {
                         val reply = callGemini(apiKey)
                         isTyping = false
-                        hudView?.statusText = "ONLINE"
+                        if (isChatScreenReady) hudView?.statusText = "ONLINE"
                         if (reply == null) {
                             addMessage("Jarvis: API yoki internet xatosi.", false)
                             speak("Internet yoki API xatosi.")
@@ -487,7 +535,20 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
             override fun onError(error: Int) {
                 val text = lastPartialSpeech.trim()
-                stopListening()
+                safeStopListening()
+                // FIX: Ignore common non-critical errors (no match, silence)
+                if (error == SpeechRecognizer.ERROR_NO_MATCH ||
+                    error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT ||
+                    error == SpeechRecognizer.ERROR_AUDIO
+                ) {
+                    if (text.isNotBlank()) {
+                        val apiKey = prefs.getString(KEY_API_KEY, "").orEmpty()
+                        sendMessage(text, apiKey)
+                    } else {
+                        handleSpeechMiss()
+                    }
+                    return
+                }
                 if (text.isNotBlank()) {
                     val apiKey = prefs.getString(KEY_API_KEY, "").orEmpty()
                     sendMessage(text, apiKey)
@@ -522,12 +583,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
         try {
             speechRecognizer?.startListening(intent)
-        } catch (_: Exception) {
-            stopListening()
+        } catch (e: Exception) {
+            safeStopListening()
         }
     }
 
     private fun handleSpeechMiss() {
+        if (!isChatScreenReady) return
         val now = System.currentTimeMillis()
         if (now - lastSpeechErrorAt > 2500) {
             addMessage("SYS: Ovoz aniq eshitilmadi. Yana bir marta ayting.", false)
@@ -536,17 +598,37 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun stopListening() {
+    // FIX: Renamed stopListening -> safeStopListening, wraps everything in try/catch
+    private fun safeStopListening() {
         isListening = false
-        hudView?.statusText = if (isTyping) "RESPONDING" else "ONLINE"
+        if (isChatScreenReady) {
+            hudView?.statusText = if (isTyping) "RESPONDING" else "ONLINE"
+        }
         micBtn?.clearAnimation()
         micBtn?.text = "MIC"
-        speechRecognizer?.stopListening()
+        try {
+            speechRecognizer?.stopListening()
+        } catch (_: Exception) {}
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+    // FIX: Separate safe destroy method
+    private fun safeDestroyRecognizer() {
+        try {
+            speechRecognizer?.cancel()
+            speechRecognizer?.destroy()
+        } catch (_: Exception) {}
+        speechRecognizer = null
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<String>,
+        grantResults: IntArray
+    ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == MIC_PERMISSION_CODE && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+        if (requestCode == MIC_PERMISSION_CODE &&
+            grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
+        ) {
             startListening()
         } else if (requestCode == MIC_PERMISSION_CODE) {
             Toast.makeText(this, "Microphone permission is required.", Toast.LENGTH_SHORT).show()
@@ -575,7 +657,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == FILE_PICK_CODE && resultCode == RESULT_OK) {
             val uri: Uri = data?.data ?: return
-            addMessage("SYS: File loaded - ${uri.lastPathSegment ?: "selected file"}", false)
+            addMessage(
+                "SYS: File loaded - ${uri.lastPathSegment ?: "selected file"}",
+                false
+            )
         }
     }
 
@@ -594,21 +679,22 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun requestAssistantPermissions() {
         val needed = mutableListOf<String>()
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            needed.add(Manifest.permission.RECORD_AUDIO)
-        }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
-            needed.add(Manifest.permission.READ_CONTACTS)
-        }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
-            needed.add(Manifest.permission.CALL_PHONE)
-        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) needed.add(Manifest.permission.RECORD_AUDIO)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS)
+            != PackageManager.PERMISSION_GRANTED
+        ) needed.add(Manifest.permission.READ_CONTACTS)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE)
+            != PackageManager.PERMISSION_GRANTED
+        ) needed.add(Manifest.permission.CALL_PHONE)
         if (needed.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, needed.toTypedArray(), ASSISTANT_PERMISSION_CODE)
         }
     }
 
     private fun sendMessage(msg: String, apiKey: String) {
+        if (!isChatScreenReady) return
         addMessage("You: $msg", true)
         conversationHistory.add("user" to msg)
         isTyping = true
@@ -618,8 +704,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         lifecycleScope.launch {
             val reply = callGemini(apiKey)
             isTyping = false
-            hudView?.statusText = "ONLINE"
-            messagesLayout?.removeView(typingView)
+            if (isChatScreenReady) hudView?.statusText = "ONLINE"
+            // FIX: Check view is still attached before removing
+            if (messagesLayout?.indexOfChild(typingView) != -1) {
+                messagesLayout?.removeView(typingView)
+            }
             if (reply == null) {
                 addMessage("Jarvis: Connection or API key error.", false)
                 speak("Internet yoki API kalit xatosi.")
@@ -677,7 +766,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         if (steps != null) {
             for (i in 0 until steps.length()) {
                 val step = steps.optJSONObject(i) ?: continue
-                executeTool(step.optString("tool"), step.optJSONObject("args") ?: JSONObject())
+                executeTool(
+                    step.optString("tool"),
+                    step.optJSONObject("args") ?: JSONObject()
+                )
                 delay(step.optLong("delay_ms", 650L))
             }
             return true
@@ -756,15 +848,18 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         } ?: apps.firstOrNull {
             it.activityInfo.packageName.lowercase(Locale.getDefault()).contains(query)
         } ?: return false
-        val intent = packageManager.getLaunchIntentForPackage(match.activityInfo.packageName) ?: return false
+        val intent =
+            packageManager.getLaunchIntentForPackage(match.activityInfo.packageName) ?: return false
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         startActivity(intent)
         return true
     }
 
     private fun callContact(contactName: String): Boolean {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED ||
-            ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS)
+            != PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE)
+            != PackageManager.PERMISSION_GRANTED
         ) {
             requestAssistantPermissions()
             return false
@@ -778,11 +873,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun dialNumber(phone: String): Boolean {
         val clean = phone.filter { it.isDigit() || it == '+' }
         if (clean.isBlank()) return false
-        val action = if (ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) {
-            Intent.ACTION_CALL
-        } else {
-            Intent.ACTION_DIAL
-        }
+        val action =
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE)
+                == PackageManager.PERMISSION_GRANTED
+            ) Intent.ACTION_CALL else Intent.ACTION_DIAL
         startActivity(Intent(action, Uri.parse("tel:$clean")))
         return true
     }
@@ -796,7 +890,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             ContactsContract.CommonDataKinds.Phone.NUMBER
         )
         contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
-            val nameIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+            val nameIndex =
+                cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
             val numberIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
             while (cursor.moveToNext()) {
                 val name = cursor.getString(nameIndex).orEmpty()
@@ -824,7 +919,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
             tts?.setSpeechRate(0.96f)
             ttsReady = true
-            if (messagesLayout != null) speak("JARVIS online. Buyruq berishingiz mumkin.")
+
+            // FIX: Only speak welcome message if chat screen is already showing
+            // Avoids crash when TTS initializes on API key screen
+            if (isChatScreenReady) {
+                speak("JARVIS online. Buyruq berishingiz mumkin.")
+            }
         }
     }
 
@@ -906,7 +1006,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         try {
             val body = JSONObject().put(
                 "contents",
-                JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", "Hi"))))
+                JSONArray().put(
+                    JSONObject().put(
+                        "parts",
+                        JSONArray().put(JSONObject().put("text", "Hi"))
+                    )
+                )
             )
             val errors = mutableListOf<String>()
             for (model in GEMINI_MODELS) {
@@ -916,7 +1021,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
                     val rawError = response.body?.string().orEmpty()
                     val message = parseGeminiError(rawError)
-                    errors.add("$model: ${response.code}${if (message.isBlank()) "" else " - $message"}")
+                    errors.add(
+                        "$model: ${response.code}${if (message.isBlank()) "" else " - $message"}"
+                    )
 
                     if (response.code == 403 || response.code == 429) {
                         return@withContext "API error: ${response.code}${if (message.isBlank()) "" else " - $message"}"
@@ -974,7 +1081,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         background = buttonBg()
         isClickable = true
         isFocusable = true
-        layoutParams = LinearLayout.LayoutParams(dp(50), dp(46)).apply { leftMargin = dp(7) }
+        layoutParams =
+            LinearLayout.LayoutParams(dp(50), dp(46)).apply { leftMargin = dp(7) }
     }
 
     private fun panelTitle(text: String) = TextView(this).apply {
@@ -985,31 +1093,33 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         setPadding(0, 0, 0, dp(4))
     }
 
-    private fun monitorRow(label: String, value: String, valueColor: Int) = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        background = buttonBg()
-        setPadding(dp(6), dp(5), dp(6), dp(5))
-        layoutParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        ).apply { bottomMargin = dp(5) }
+    private fun monitorRow(label: String, value: String, valueColor: Int) =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = buttonBg()
+            setPadding(dp(6), dp(5), dp(6), dp(5))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(5) }
 
-        addView(TextView(this@MainActivity).apply {
-            text = label
-            setTextColor(JarvisHudView.C_TEXT)
-            textSize = 9f
-            typeface = mono()
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        })
-        addView(TextView(this@MainActivity).apply {
-            text = value
-            setTextColor(valueColor)
-            textSize = 9f
-            typeface = monoBold()
-            gravity = Gravity.END
-        })
-    }
+            addView(TextView(this@MainActivity).apply {
+                text = label
+                setTextColor(JarvisHudView.C_TEXT)
+                textSize = 9f
+                typeface = mono()
+                layoutParams =
+                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = value
+                setTextColor(valueColor)
+                textSize = 9f
+                typeface = monoBold()
+                gravity = Gravity.END
+            })
+        }
 
     private fun panelBg() = GradientDrawable().apply {
         setColor(JarvisHudView.C_PANEL)
@@ -1058,9 +1168,17 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     override fun onDestroy() {
         super.onDestroy()
-        speechRecognizer?.destroy()
+        isChatScreenReady = false
+        safeStopListening()
+        safeDestroyRecognizer()
         tts?.stop()
         tts?.shutdown()
+    }
+
+    // FIX: Pause listening when app goes to background to avoid ghost errors
+    override fun onPause() {
+        super.onPause()
+        if (isListening) safeStopListening()
     }
 }
 
@@ -1133,7 +1251,12 @@ class JarvisHudView(context: Context) : View(context) {
         canvas.drawText("J.A.R.V.I.S", w / 2f, dp(26).toFloat(), textPaint)
         thinTextPaint.color = C_MID
         thinTextPaint.textSize = sp(9)
-        canvas.drawText("Just A Rather Very Intelligent System", w / 2f, dp(47).toFloat(), thinTextPaint)
+        canvas.drawText(
+            "Just A Rather Very Intelligent System",
+            w / 2f,
+            dp(47).toFloat(),
+            thinTextPaint
+        )
 
         thinTextPaint.textAlign = Paint.Align.LEFT
         thinTextPaint.color = C_DIM
@@ -1141,7 +1264,12 @@ class JarvisHudView(context: Context) : View(context) {
         thinTextPaint.textAlign = Paint.Align.RIGHT
         thinTextPaint.color = C_PRI
         thinTextPaint.textSize = sp(13)
-        canvas.drawText(timeFormat.format(Date()), w - dp(14).toFloat(), dp(36).toFloat(), thinTextPaint)
+        canvas.drawText(
+            timeFormat.format(Date()),
+            w - dp(14).toFloat(),
+            dp(36).toFloat(),
+            thinTextPaint
+        )
         thinTextPaint.textAlign = Paint.Align.CENTER
     }
 
@@ -1226,7 +1354,8 @@ class JarvisHudView(context: Context) : View(context) {
         paint.style = Paint.Style.FILL
         for (i in 0 until bars) {
             val phase = sin(tick * 0.09f + i * 0.6f)
-            val bh = if (speaking) dp(5) + (dp(18) * (phase + 1f) / 2f) else dp(4) + dp(2) * phase
+            val bh =
+                if (speaking) dp(5) + (dp(18) * (phase + 1f) / 2f) else dp(4) + dp(2) * phase
             paint.color = if (speaking && bh > dp(13)) C_PRI else C_DIM
             val x = start + i * barW
             canvas.drawRect(x, y + dp(14), x + barW - 1f, y + dp(14) + bh, paint)
@@ -1243,11 +1372,21 @@ class JarvisHudView(context: Context) : View(context) {
         canvas.drawLine(0f, h - footerH, w, h - footerH, paint)
         thinTextPaint.color = C_DIM
         thinTextPaint.textSize = sp(8)
-        canvas.drawText("FatihMakes Industries  .  CLASSIFIED  .  MARK XXX", w / 2f, h - dp(11).toFloat(), thinTextPaint)
+        canvas.drawText(
+            "FatihMakes Industries  .  CLASSIFIED  .  MARK XXX",
+            w / 2f,
+            h - dp(11).toFloat(),
+            thinTextPaint
+        )
     }
 
     private fun withAlpha(color: Int, alpha: Int): Int {
-        return Color.argb(alpha.coerceIn(0, 255), Color.red(color), Color.green(color), Color.blue(color))
+        return Color.argb(
+            alpha.coerceIn(0, 255),
+            Color.red(color),
+            Color.green(color),
+            Color.blue(color)
+        )
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
