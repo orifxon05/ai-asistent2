@@ -418,21 +418,26 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             speak("JARVIS online. Buyruq berishingiz mumkin.")
         }
 
-        // FIX: Auto-listen after screen is fully built, with proper checks
+        // FIX: Auto-listen with longer delay, wrapped in try/catch
         lifecycleScope.launch {
-            delay(1200)
-            if (isChatScreenReady && !isListening && !isTyping &&
-                ContextCompat.checkSelfPermission(
+            delay(2500)
+            if (!isChatScreenReady || isListening || isTyping) return@launch
+            if (ContextCompat.checkSelfPermission(
                     this@MainActivity,
                     Manifest.permission.RECORD_AUDIO
                 ) == PackageManager.PERMISSION_GRANTED
             ) {
-                startListening()
+                try { startListening() } catch (_: Exception) {}
             }
         }
 
-        // FIX: Check updates only after chat screen is ready
-        checkForUpdates()
+        // FIX: Update check delayed so it doesn't compete with startup
+        lifecycleScope.launch {
+            delay(4000)
+            if (isChatScreenReady) {
+                try { checkForUpdates() } catch (_: Exception) {}
+            }
+        }
     }
 
     private fun showApiResetDialog() {
@@ -484,6 +489,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             repeatCount = Animation.INFINITE
             repeatMode = Animation.REVERSE
         })
+        // FIX: Removed speak("Eshityapman") here — was causing TTS/SpeechRecognizer conflict
 
         // FIX: Safely destroy previous recognizer
         safeDestroyRecognizer()
