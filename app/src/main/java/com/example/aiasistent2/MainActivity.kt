@@ -937,7 +937,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun speak(text: String) {
         if (!ttsReady) return
         val clean = text
-            .replace(Regex("\\{.*}", RegexOption.DOT_MATCHES_ALL), "")
+            .replace(Regex("\\{[^}]*}"), "")
             .replace("SYS:", "")
             .replace("Jarvis:", "")
             .trim()
